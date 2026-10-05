@@ -3,7 +3,9 @@ from datetime import date, datetime
 from functools import wraps
 from django.contrib.auth import authenticate, login, logout
 from django.core.files.base import ContentFile
-from django.core.exceptions import ObjectDoesNotExist
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.db import IntegrityError, transaction
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
@@ -72,6 +74,24 @@ def month_counts(user, month):
     return days
 
 def audit(request, tenant, text): AuditLog.objects.create(tenant=tenant, actor=request.user, action=text[:200])
+
+USERNAME_RE = re.compile(r"[\w.@+-]{3,150}")
+def _err(e, status=400): return JsonResponse({"error": str(e)}, status=status)
+
+def _make_account(tenant, role, username, first, last, pw):
+    """Validate and create one account. Raises ValueError with a message that is safe to show."""
+    username = str(username or "").strip()
+    if not USERNAME_RE.fullmatch(username): raise ValueError("Username must be 3-150 characters: letters, numbers and . @ + - _ only")
+    if User.objects.filter(username__iexact=username).exists(): raise ValueError("That username is already taken")
+    u = User(username=username, role=role, tenant=tenant, first_name=str(first or "").strip()[:150], last_name=str(last or "").strip()[:150])
+    pw = str(pw or "")
+    try: validate_password(pw, u)
+    except ValidationError as e: raise ValueError(" ".join(e.messages))
+    u.set_password(pw)
+    try:
+        with transaction.atomic(): u.save()
+    except IntegrityError: raise ValueError("That username is already taken")
+    return u
 
 # ---------- screen 1: login ----------
 def login_view(request):
@@ -211,9 +231,16 @@ def a_context(request):
 @api(roles=[User.ADMIN, User.SUPER])
 def a_users(request):
     t = staff_tenant(request)
+    if request.method == "POST":      # create a user inside the business (admins are locked to their own business by staff_tenant)
+        if not t: return _err("Choose a business first")
+        d = request.data
+        try: u = _make_account(t, User.USER, d.get("username"), d.get("first_name"), d.get("last_name"), d.get("password"))
+        except ValueError as e: return _err(e)
+        audit(request, t, f"user created: {u.username}")
+        return JsonResponse({"ok": True, "id": u.id, "username": u.username})
     rows = []
     for u in User.objects.filter(tenant=t, role=User.USER).order_by("first_name", "username"):
-        rows.append(dict(id=u.id, name=u.get_full_name() or u.username, open=u.tickets.exclude(status__in=["resolved", "closed"]).count(),
+        rows.append(dict(id=u.id, username=u.username, active=u.is_active, name=u.get_full_name() or u.username, open=u.tickets.exclude(status__in=["resolved", "closed"]).count(),
                          pending=u.bookings.filter(status="pending").count(),
                          human=ChatSession.objects.filter(user=u, mode="human").exists()))
     return JsonResponse(rows, safe=False)
@@ -349,3 +376,52 @@ def s_overview(request):
     log = [dict(at=timezone.localtime(a.created).strftime("%Y-%m-%d %H:%M"), business=a.tenant.name if a.tenant else "Platform",
                 actor=a.actor.username if a.actor else "-", action=a.action) for a in AuditLog.objects.select_related("tenant", "actor")[:40]]
     return JsonResponse(dict(tenants=rows, log=log))
+
+# ----- account management (create / deactivate / reset password) -----
+@api(roles=[User.ADMIN, User.SUPER], post=True)
+def a_account(request, pk):
+    """Business admins manage users of their own business; the platform admin can also manage business admins."""
+    me = request.user
+    if me.role == User.SUPER: u = User.objects.get(pk=pk, role__in=[User.USER, User.ADMIN], tenant__isnull=False)
+    else: u = User.objects.get(pk=pk, tenant=me.tenant, role=User.USER)
+    if u.pk == me.pk: return _err("You can’t change your own account here")
+    d, did = request.data, []
+    if "active" in d:
+        u.is_active = bool(d["active"]); did.append("activated" if u.is_active else "deactivated")
+    if d.get("password"):
+        try: validate_password(str(d["password"]), u)
+        except ValidationError as e: return _err(" ".join(e.messages))
+        u.set_password(str(d["password"])); did.append("password reset")
+    if not did: return _err("Nothing to change")
+    u.save(); audit(request, u.tenant, f"{u.role} {u.username}: " + ", ".join(did))
+    return JsonResponse({"ok": True})
+
+@api(roles=[User.SUPER], post=True)
+def s_business_new(request):
+    """Create a business and its first admin in one step."""
+    d = request.data
+    name = str(d.get("name", "")).strip()[:120]
+    if len(name) < 2: return _err("Enter the business name")
+    if Tenant.objects.filter(name__iexact=name).exists(): return _err("A business with that name already exists")
+    vid = str(d.get("vertical", ""))
+    v = Vertical.objects.filter(pk=int(vid)).first() if vid.isdigit() else None
+    if not v: return _err("Choose a business type")
+    try:
+        with transaction.atomic():
+            t = Tenant.objects.create(name=name, vertical=v)
+            a = _make_account(t, User.ADMIN, d.get("admin_username"), d.get("admin_first_name"), d.get("admin_last_name"), d.get("admin_password"))
+    except ValueError as e: return _err(e)       # the business is rolled back too
+    audit(request, t, f"business created: {name}; admin {a.username}")
+    return JsonResponse({"ok": True, "tenant": t.id, "admin": a.username})
+
+@api(roles=[User.SUPER])
+def s_admins(request):
+    """GET: every business admin account. POST: add another admin to an existing business."""
+    if request.method == "POST":
+        d = request.data
+        t = Tenant.objects.get(pk=d["tenant"])
+        try: a = _make_account(t, User.ADMIN, d.get("username"), d.get("first_name"), d.get("last_name"), d.get("password"))
+        except ValueError as e: return _err(e)
+        audit(request, t, f"admin created: {a.username}")
+    return JsonResponse([dict(id=a.id, username=a.username, name=a.get_full_name() or a.username, business=a.tenant.name, active=a.is_active)
+                         for a in User.objects.filter(role=User.ADMIN, tenant__isnull=False).select_related("tenant").order_by("tenant__name", "username")], safe=False)

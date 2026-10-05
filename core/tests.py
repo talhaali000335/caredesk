@@ -62,3 +62,52 @@ class Flow(TestCase):
         self.assertIn("Qty 2", J(ok)["notes"])
 
     def test_healthcheck(self): self.assertEqual(self.client.get("/healthz").content, b"ok")
+
+    # ---- account creation ----
+    def test_admin_creates_user_only_in_own_business(self):
+        self.login("a1", "admin")
+        r = self.post(f"/api/admin/users?tenant={self.t2.id}", {"username": "newu", "first_name": "N", "password": PW, "tenant": self.t2.id})
+        self.assertEqual(r.status_code, 200)
+        n = User.objects.get(username="newu"); self.assertEqual((n.tenant, n.role), (self.t1, "user"))      # tenant param ignored for admins
+        self.assertEqual(self.post("/api/admin/users", {"username": "NEWU", "password": PW}).status_code, 400)   # duplicate, case-insensitive
+        self.assertEqual(self.post("/api/admin/users", {"username": "weak1", "password": "short"}).status_code, 400)
+        self.assertEqual(self.post("/api/admin/users", {"username": "bad name!", "password": PW}).status_code, 400)
+        self.login("newu", "user"); self.assertEqual(self.client.get("/app/").status_code, 200)
+
+    def test_user_cannot_create_accounts(self):
+        self.login("u1", "user")
+        for url in ("/api/admin/users", "/api/super/businesses", "/api/super/admins", f"/api/admin/account/{self.u1.id}"):
+            self.assertEqual(self.post(url, {"username": "x", "password": PW}).status_code, 403)
+
+    def test_admin_cannot_create_business_or_admin(self):
+        self.login("a1", "admin")
+        self.assertEqual(self.post("/api/super/businesses", {"name": "Z"}).status_code, 403)
+        self.assertEqual(self.post("/api/super/admins", {"tenant": self.t1.id, "username": "x", "password": PW}).status_code, 403)
+
+    def test_super_creates_business_with_admin(self):
+        self.login("su", "admin"); v = Vertical.objects.first()
+        r = self.post("/api/super/businesses", {"name": "New Biz", "vertical": v.id, "admin_username": "nb_admin", "admin_password": PW})
+        self.assertEqual(r.status_code, 200)
+        a = User.objects.get(username="nb_admin"); self.assertEqual((a.role, a.tenant.name), ("admin", "New Biz"))
+        self.assertEqual(self.login("nb_admin", "admin").status_code, 302)
+        self.login("su", "admin")
+        bad = self.post("/api/super/businesses", {"name": "Bad Biz", "vertical": v.id, "admin_username": "x y", "admin_password": PW})
+        self.assertEqual(bad.status_code, 400); self.assertFalse(Tenant.objects.filter(name="Bad Biz").exists())    # rolled back
+        self.assertEqual(self.post("/api/super/businesses", {"name": "new biz", "vertical": v.id, "admin_username": "q1q1", "admin_password": PW}).status_code, 400)
+
+    def test_deactivate_and_reset_password(self):
+        self.login("a1", "admin")
+        self.assertEqual(self.post(f"/api/admin/account/{self.u2.id}", {"active": False}).status_code, 404)   # other business
+        self.assertEqual(self.post(f"/api/admin/account/{self.a2.id}", {"active": False}).status_code, 404)   # admins are not manageable by admins
+        self.assertEqual(self.post(f"/api/admin/account/{self.u1.id}", {"active": False}).status_code, 200)
+        self.assertEqual(self.login("u1", "user").status_code, 200)                                          # blocked at login
+        self.post(f"/api/admin/account/{self.u1.id}", {"active": True}) if self.login("a1", "admin") else None
+        self.assertEqual(self.post(f"/api/admin/account/{self.u1.id}", {"password": "Another-Pass-77"}).status_code, 200)
+        self.client.logout(); self.assertEqual(self.client.post("/", {"username": "u1", "password": "Another-Pass-77", "as": "user"}).status_code, 302)
+
+    def test_super_manages_admins_but_not_self(self):
+        self.login("su", "admin")
+        self.assertEqual(self.post(f"/api/admin/account/{self.su.id}", {"active": False}).status_code, 404)
+        self.assertEqual(self.post(f"/api/admin/account/{self.a1.id}", {"active": False}).status_code, 200)
+        self.assertEqual([a["username"] for a in J(self.client.get("/api/super/admins")) if not a["active"]], ["a1"])
+        r = self.post("/api/super/admins", {"tenant": self.t1.id, "username": "a1b", "password": PW}); self.assertEqual(r.status_code, 200)

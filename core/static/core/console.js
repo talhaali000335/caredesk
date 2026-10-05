@@ -1,5 +1,5 @@
 const IS_SUPER = document.body.dataset.super === "1";
-let ctx, tabName = "customers", uid = null, qDate = "", tenantQ = "";
+let ctx, tabName = "customers", uid = null, qDate = "", tenantQ = "", flash = "";
 const q = (u) => u + (tenantQ ? (u.includes("?") ? "&" : "?") + "tenant=" + tenantQ : "");
 const view = $("#view");
 
@@ -9,9 +9,9 @@ async function boot() {
     sel.value = tenantQ || ctx.tenant?.id; sel.onchange = () => { tenantQ = sel.value; uid = null; boot(); }; }
   if (ctx.tenant) { const r = document.body.style; r.setProperty("--teal", ctx.tenant.theme.accent); r.setProperty("--deep", ctx.tenant.theme.dark); }
   $("#biz").textContent = ctx.tenant ? ctx.tenant.name : "CareDesk admin"; $("#vert").textContent = ctx.tenant?.vertical || "";
-  const tabs = [["customers", "Customers"], ["knowledge", "Policies & FAQ"]]; if (IS_SUPER) { tabs.unshift(["overview", "All businesses"]); tabs.push(["platform", "Bot contexts"]); if (tabName === "customers" && !tenantQ && !window.__seen) { tabName = "overview"; window.__seen = 1; } }
+  const tabs = [["customers", "Customers"], ["people", "Manage users"], ["knowledge", "Policies & FAQ"]]; if (IS_SUPER) { tabs.unshift(["overview", "All businesses"]); tabs.push(["accounts", "Businesses & admins"], ["platform", "Bot contexts"]); if (tabName === "customers" && !tenantQ && !window.__seen) { tabName = "overview"; window.__seen = 1; } }
   const bar = $("#tabs"); bar.replaceChildren(...tabs.map(([k, l]) => h("button", { class: "tab", role: "tab", "aria-selected": k === tabName, onclick: () => { tabName = k; boot(); } }, l)));
-  ({ customers, knowledge, platform, overview })[tabName]();
+  ({ customers, people, knowledge, platform, overview, accounts })[tabName]();
 }
 
 // ---------- customers ----------
@@ -108,4 +108,73 @@ async function platform() {
       h("div", { class: "grid2" }, h("div", {}, h("label", {}, "Main colour"), f.accent), h("div", {}, h("label", {}, "Dark colour"), f.accent_dark)),
       h("label", {}, "Chat shortcuts"), f.quick_prompts, h("label", {}, "Reply when a question is off-topic"), f.refusal_text, h("p", {}, h("button", { class: "btn pri", onclick: save }, "Save bot context")))));
 }
+// ---------- account helpers ----------
+function genPassword() { const c = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789", a = new Uint32Array(14); crypto.getRandomValues(a); return Array.from(a, n => c[n % c.length]).join(""); }
+function pwField() {
+  const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: "At least 10 characters", "aria-label": "Password" });
+  const gen = h("button", { type: "button", class: "btn sm", onclick: () => { pw.value = genPassword(); pw.type = "text"; } }, "Generate");
+  return { pw, row: h("div", { class: "row" }, pw, gen) };
+}
+const statusChip = a => h("span", { class: "chip " + (a ? "s-resolved" : "s-closed") }, a ? "Active" : "Deactivated");
+function accountButtons(a, after) {
+  const act = h("button", { class: "btn sm" + (a.active ? " danger" : ""), onclick: async () => {
+    if (a.active && !confirm(`Deactivate ${a.username}? They will no longer be able to sign in.`)) return;
+    try { await call("/api/admin/account/" + a.id, "POST", { active: !a.active }); flash = `${a.username} ${a.active ? "deactivated" : "reactivated"}.`; after(); } catch (e) { alert(e.message); } } }, a.active ? "Deactivate" : "Reactivate");
+  const rst = h("button", { class: "btn sm", onclick: async () => {
+    const p = prompt(`New password for ${a.username} (at least 10 characters):`, genPassword()); if (!p) return;
+    try { await call("/api/admin/account/" + a.id, "POST", { password: p }); flash = `Password reset for ${a.username}. Share it with them privately: ${p}`; after(); } catch (e) { alert(e.message); } } }, "Reset password");
+  return h("div", { class: "row wrap" }, rst, act);
+}
+function takeFlash() { const p = h("p", { class: "muted sm", role: "status" }, flash); flash = ""; return p; }
+
+// ---------- manage users (business admin; super admin for the selected business) ----------
+async function people() {
+  if (!ctx.tenant) return view.replaceChildren(empty("No business selected."));
+  const users = await call(q("/api/admin/users"));
+  const f = { username: h("input", { maxlength: 150, autocomplete: "off", "aria-label": "Username" }), first_name: h("input", { maxlength: 150, "aria-label": "First name" }), last_name: h("input", { maxlength: 150, "aria-label": "Last name" }) };
+  const { pw, row } = pwField(), err = h("p", { class: "err", role: "alert" });
+  const add = async () => { err.textContent = "";
+    try { const r = await call(q("/api/admin/users"), "POST", { username: f.username.value, first_name: f.first_name.value, last_name: f.last_name.value, password: pw.value });
+      flash = `User “${r.username}” created. Give them the password you set: ${pw.value}`; people(); } catch (e) { err.textContent = e.message; } };
+  view.replaceChildren(h("div", { class: "grid2", style: "margin-top:14px" },
+    h("div", { class: "card" }, h("h2", {}, "Add a user"), h("p", { class: "muted sm" }, `The account is created in ${ctx.tenant.name} only. Users sign in on the “User” tab of the login page.`),
+      h("label", {}, "Username"), f.username, h("div", { class: "grid2" }, h("div", {}, h("label", {}, "First name"), f.first_name), h("div", {}, h("label", {}, "Last name"), f.last_name)),
+      h("label", {}, "Password"), row, err, h("p", {}, h("button", { class: "btn pri", onclick: add }, "Create user")), takeFlash()),
+    h("div", { class: "card" }, h("h2", {}, `Users in ${ctx.tenant.name}`),
+      users.length ? h("table", {}, h("thead", {}, h("tr", {}, ...["User", "Status", ""].map(x => h("th", {}, x)))),
+        h("tbody", {}, users.map(u => h("tr", {}, h("td", {}, h("b", {}, u.name), h("div", { class: "muted sm" }, u.username)), h("td", {}, statusChip(u.active)), h("td", {}, accountButtons(u, people)))))) : empty("No users yet. Add the first one."))));
+}
+
+// ---------- businesses & admins (platform admin only) ----------
+async function accounts() {
+  const [vs, ts, admins] = await Promise.all([call("/api/super/verticals"), call("/api/super/tenants"), call("/api/super/admins")]);
+  const inp = (ph, extra = {}) => h("input", { maxlength: 150, autocomplete: "off", "aria-label": ph, placeholder: ph, ...extra });
+  // new business + first admin
+  const nb = { name: inp("Business name", { maxlength: 120 }), vertical: h("select", { "aria-label": "Business type" }, h("option", { value: "" }, "Choose business type"), vs.map(v => h("option", { value: v.id }, v.name))),
+    admin_username: inp("Admin username"), admin_first_name: inp("First name"), admin_last_name: inp("Last name") };
+  const a1 = pwField(), e1 = h("p", { class: "err", role: "alert" });
+  const createBiz = async () => { e1.textContent = "";
+    try { const body = {}; for (const k in nb) body[k] = nb[k].value; body.admin_password = a1.pw.value; const r = await call("/api/super/businesses", "POST", body);
+      flash = `Business created with admin “${r.admin}”. Give them the password you set: ${a1.pw.value}`; accounts(); } catch (e) { e1.textContent = e.message; } };
+  // extra admin for an existing business
+  const ex = { tenant: h("select", { "aria-label": "Business" }, ts.map(t => h("option", { value: t.id }, t.name))), username: inp("Admin username"), first_name: inp("First name"), last_name: inp("Last name") };
+  const a2 = pwField(), e2 = h("p", { class: "err", role: "alert" });
+  const addAdmin = async () => { e2.textContent = "";
+    try { const body = {}; for (const k in ex) body[k] = ex[k].value; body.password = a2.pw.value; await call("/api/super/admins", "POST", body);
+      flash = `Admin “${ex.username.value}” added. Give them the password you set: ${a2.pw.value}`; accounts(); } catch (e) { e2.textContent = e.message; } };
+  view.replaceChildren(h("div", { style: "margin-top:14px" }, takeFlash(),
+    h("div", { class: "grid2" },
+      h("div", { class: "card" }, h("h2", {}, "Create a business and its admin"), h("p", { class: "muted sm" }, "Both are created together. The admin then adds their own users."),
+        h("label", {}, "Business"), nb.name, h("label", {}, "Business type"), nb.vertical, h("label", {}, "Admin username"), nb.admin_username,
+        h("div", { class: "grid2" }, h("div", {}, h("label", {}, "First name"), nb.admin_first_name), h("div", {}, h("label", {}, "Last name"), nb.admin_last_name)),
+        h("label", {}, "Admin password"), a1.row, e1, h("p", {}, h("button", { class: "btn pri", onclick: createBiz }, "Create business + admin"))),
+      h("div", { class: "card" }, h("h2", {}, "Add another admin to a business"),
+        h("label", {}, "Business"), ex.tenant, h("label", {}, "Admin username"), ex.username,
+        h("div", { class: "grid2" }, h("div", {}, h("label", {}, "First name"), ex.first_name), h("div", {}, h("label", {}, "Last name"), ex.last_name)),
+        h("label", {}, "Password"), a2.row, e2, h("p", {}, h("button", { class: "btn pri", onclick: addAdmin }, "Add admin")))),
+    h("div", { class: "card", style: "margin-top:14px" }, h("h2", {}, "Business admins"),
+      admins.length ? h("table", {}, h("thead", {}, h("tr", {}, ...["Admin", "Business", "Status", ""].map(x => h("th", {}, x)))),
+        h("tbody", {}, admins.map(a => h("tr", {}, h("td", {}, h("b", {}, a.name), h("div", { class: "muted sm" }, a.username)), h("td", {}, a.business), h("td", {}, statusChip(a.active)), h("td", {}, accountButtons(a, accounts)))))) : empty("No admins yet."))));
+}
+
 boot();

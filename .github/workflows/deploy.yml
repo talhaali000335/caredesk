@@ -1,0 +1,63 @@
+name: Deploy to AWS
+on:
+  push: {branches: [main]}
+  workflow_dispatch:
+permissions: {id-token: write, contents: read}      # OIDC: no long-lived AWS keys in GitHub
+concurrency: {group: deploy-prod, cancel-in-progress: false}
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env: {DJANGO_DEBUG: "1", DJANGO_SECRET_KEY: ci-only}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt && python manage.py test
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production                          # add required reviewers in repo settings for manual approval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push image
+        id: img
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
+          docker build -t "$IMAGE" . && docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+      - id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: deploy/task-definition.json
+          container-name: web
+          image: ${{ steps.img.outputs.image }}
+      - name: Register task definition
+        id: td
+        run: |
+          ARN=$(aws ecs register-task-definition --cli-input-json file://${{ steps.render.outputs.task-definition }} \
+                --query taskDefinition.taskDefinitionArn --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+      - name: Run database migrations (one-off task)
+        run: |
+          TASK=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition ${{ steps.td.outputs.arn }} --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNETS }}],securityGroups=[${{ vars.APP_SECURITY_GROUP }}],assignPublicIp=ENABLED}" \
+            --overrides '{"containerOverrides":[{"name":"web","command":["python","manage.py","migrate","--noinput"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK"
+          CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" --query 'tasks[0].containers[0].exitCode' --output text)
+          test "$CODE" = "0" || { echo "migration failed ($CODE)"; exit 1; }
+      - name: Roll out (rolling update, auto-rollback on failure)
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition ${{ steps.td.outputs.arn }} >/dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"

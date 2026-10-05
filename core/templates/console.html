@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% block title %}Admin · CareDesk{% endblock %}
+{% block bodyattrs %}data-super="{{ is_super|yesno:'1,0' }}"{% endblock %}
+{% block body %}
+<div class="topbar"><span class="brand" id="biz">CareDesk admin</span><span class="vert" id="vert"></span><span class="grow"></span>
+<select id="tenant-pick" style="width:auto;color:#10212B" hidden aria-label="Business"></select>
+<form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="btn sm">Sign out</button></form></div>
+<div class="cwrap"><div class="tabs" role="tablist" id="tabs"></div><div id="view"></div></div>
+{% endblock %}
+{% block scripts %}{% load static %}<script src="{% static 'core/console.js' %}"></script>{% endblock %}

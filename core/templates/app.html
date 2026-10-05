@@ -1,0 +1,34 @@
+{% extends "base.html" %}{% block title %}{{ tenant.name }} · CareDesk{% endblock %}
+{% block bodyattrs %}data-today="{{ today }}" data-bot="{{ tenant.bot_enabled|yesno:'1,0' }}" data-talk="{{ tenant.talk_enabled|yesno:'1,0' }}" data-human="{{ tenant.human_chat_enabled|yesno:'1,0' }}" data-greeting="{{ vertical.greeting }}" data-style="{{ theme.style }}" data-noun="{{ theme.noun }}" data-prompts="{{ theme.prompts|join:'|' }}"{% endblock %}
+{% block body %}
+<div class="topbar"><span class="brand">{{ tenant.name }}</span><span class="vert">{{ vertical.name }}</span><span class="grow"></span>
+<span class="sm">{{ request.user.get_full_name|default:request.user.username }}</span>
+<form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="btn sm">Sign out</button></form></div>
+<div class="shell">
+<section class="left">
+ <div class="row wrap"><div class="tabs grow" role="tablist"><button class="tab" role="tab" aria-selected="true" id="t-act">Activity</button><button class="tab" role="tab" aria-selected="false" id="t-faq">Help &amp; FAQ</button></div>
+ <button class="btn sm" id="new-ticket">New ticket</button><button class="btn pri sm" id="new-booking">{% if theme.style == "order" %}Place order{% else %}Book {{ theme.noun|lower }}{% endif %}</button></div>
+ <div id="activity">
+  <div class="row wrap" style="margin-bottom:10px"><label for="pick" class="sm" style="margin:0">Date</label><input type="date" id="pick" style="width:auto"><button class="btn sm" id="go-today">Today</button><span class="muted sm">Days with activity this month:</span></div>
+  <div class="days" id="days" aria-label="Days with activity"></div>
+  <div id="day"></div>
+ </div>
+ <div id="faq" hidden></div>
+</section>
+<aside class="chat" aria-label="Chat">
+ <header><div class="grow"><h2>Assistant</h2><span class="pill" id="mode">Assistant</span></div>
+  <button class="btn sm" id="speak" hidden aria-pressed="false">Read aloud</button>
+  <button class="btn sm" id="swap">Talk to team</button></header>
+ <div class="msgs" id="msgs" aria-live="polite"></div>
+ <div class="quick" id="quick"></div>
+ <div class="composer"><button class="btn" id="mic" hidden aria-label="Talk">Talk</button><input id="msg" maxlength="600" placeholder="Ask about a ticket, booking or policy" aria-label="Message"><button class="btn pri" id="send">Send</button></div>
+</aside></div>
+<dialog id="dlg-ticket"><h2>New ticket</h2><label for="tk-s">Subject</label><input id="tk-s" maxlength="160"><label for="tk-d">Details</label><textarea id="tk-d" rows="4" maxlength="2000"></textarea>
+<label for="tk-p">Priority</label><select id="tk-p"><option>low</option><option selected>normal</option><option>high</option></select><p class="err" id="tk-e"></p>
+<div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" data-close>Cancel</button><button class="btn pri" id="tk-go">Create ticket</button></div></dialog>
+<dialog id="dlg-booking"><h2>{% if theme.style == "order" %}New order{% else %}New {{ theme.noun|lower }}{% endif %}</h2><label for="bk-s">{{ vertical.service_label }}</label><select id="bk-s">{% for o in options %}<option>{{ o }}</option>{% endfor %}</select>
+{% if theme.style == "order" %}<div class="grid2"><div><label for="bk-q">Quantity</label><input type="number" id="bk-q" min="1" max="99" value="1"></div><div><label for="bk-f">Get it by</label><select id="bk-f"><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></div></div>{% endif %}
+<label for="bk-w">{% if theme.style == "order" %}Needed on{% else %}Date and time{% endif %}</label><input type="datetime-local" id="bk-w"><label for="bk-n">{% if theme.style == "order" %}Address or notes{% else %}Notes for the team{% endif %}</label><input id="bk-n" maxlength="500"><p class="err" id="bk-e"></p>
+<div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" data-close>Cancel</button><button class="btn pri" id="bk-go">Book</button></div></dialog>
+{% endblock %}
+{% block scripts %}{% load static %}<script src="{% static 'core/user.js' %}"></script><script src="{% static 'core/voice.js' %}"></script>{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% block title %}Sign in · CareDesk{% endblock %}
+{% block body %}<main class="login">
+<section class="hero"><h1>Every ticket and booking, in one calm place.</h1>
+<p>Sign in to see your requests by date, ask the assistant, or hand the conversation to the team.</p></section>
+<section class="form"><form method="post" autocomplete="on">{% csrf_token %}
+<h2>Sign in to CareDesk</h2>
+<div class="seg" role="radiogroup" aria-label="Account type">
+<input type="radio" name="as" id="as-user" value="user" {% if as != "admin" %}checked{% endif %}><label for="as-user">User</label>
+<input type="radio" name="as" id="as-admin" value="admin" {% if as == "admin" %}checked{% endif %}><label for="as-admin">Business admin</label></div>
+<label for="u">Username</label><input id="u" name="username" required autocomplete="username" maxlength="150">
+<label for="p">Password</label><input id="p" name="password" type="password" required autocomplete="current-password">
+{% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+<p><button class="btn pri" style="width:100%;margin-top:18px">Sign in</button></p>
+</form></section></main>{% endblock %}

@@ -1,0 +1,33 @@
+name: CI
+on:
+  pull_request:
+  push: {branches-ignore: [main]}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_DB: caredesk, POSTGRES_USER: caredesk, POSTGRES_PASSWORD: caredesk}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U caredesk" --health-interval 5s --health-retries 10
+    env:
+      DJANGO_DEBUG: "1"
+      DJANGO_SECRET_KEY: ci-only
+      DATABASE_URL: postgres://caredesk:caredesk@localhost:5432/caredesk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt pip-audit
+      - run: pip-audit -r requirements.txt            # known-vulnerable dependencies fail the build
+      - run: python manage.py makemigrations --check --dry-run
+      - run: python manage.py test
+      - run: DJANGO_DEBUG=0 python manage.py check --deploy
+  image-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t caredesk:scan .
+      - uses: aquasecurity/trivy-action@0.28.0
+        with: {image-ref: "caredesk:scan", severity: "CRITICAL,HIGH", exit-code: "1", ignore-unfixed: true}

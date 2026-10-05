@@ -1,0 +1,30 @@
+{
+  "family": "caredesk",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512", "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::515579969505:role/caredesk-task-execution",
+  "taskRoleArn": "arn:aws:iam::515579969505:role/caredesk-task",
+  "containerDefinitions": [{
+    "name": "web",
+    "image": "REPLACED_BY_PIPELINE",
+    "essential": true,
+    "portMappings": [{"containerPort": 8000}],
+    "readonlyRootFilesystem": false,
+    "environment": [
+      {"name": "DJANGO_ALLOWED_HOSTS", "value": "d3v2tq1ezfkb3h.cloudfront.net"},
+      {"name": "CSRF_TRUSTED_ORIGINS", "value": "https://d3v2tq1ezfkb3h.cloudfront.net"},
+      {"name": "AWS_REGION", "value": "us-east-1"},
+      {"name": "AWS_STORAGE_BUCKET_NAME", "value": "caredesk-policies-talha-2026"},
+      {"name": "BEDROCK_MODEL_ID", "value": ""},
+      {"name": "BEDROCK_GUARDRAIL_ID", "value": ""},
+      {"name": "BEDROCK_GUARDRAIL_VERSION", "value": "1"}
+    ],
+    "secrets": [
+      {"name": "DJANGO_SECRET_KEY", "valueFrom": "arn:aws:secretsmanager:us-east-1:515579969505:secret:caredesk/secret-key-GkTEYW"},
+      {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-1:515579969505:secret:caredesk/database-url-ib2oR9"}
+    ],
+    "healthCheck": {"command": ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:8000/healthz')\""], "interval": 30, "timeout": 5, "retries": 3},
+    "logConfiguration": {"logDriver": "awslogs", "options": {"awslogs-group": "/ecs/caredesk", "awslogs-region": "us-east-1", "awslogs-stream-prefix": "web"}}
+  }]
+}

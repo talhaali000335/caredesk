@@ -1,0 +1,21 @@
+# Local stack: docker compose up --build   ->  http://localhost:8000
+services:
+  db:
+    image: postgres:16-alpine
+    environment: {POSTGRES_DB: caredesk, POSTGRES_USER: caredesk, POSTGRES_PASSWORD: caredesk}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U caredesk"], interval: 5s, retries: 10}
+  redis:
+    image: redis:7-alpine
+  web:
+    build: .
+    ports: ["8000:8000"]
+    depends_on: {db: {condition: service_healthy}, redis: {condition: service_started}}
+    environment:
+      DJANGO_DEBUG: "1"
+      DJANGO_SECRET_KEY: local-dev-only
+      DATABASE_URL: postgres://caredesk:caredesk@db:5432/caredesk
+      REDIS_URL: redis://redis:6379/0
+      DEMO_PASSWORD: Demo-Pass-2026
+    command: sh -c "python manage.py migrate --noinput && python manage.py seed_demo && gunicorn config.wsgi:application -b 0.0.0.0:8000"
+volumes: {pgdata: {}}

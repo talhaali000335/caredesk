@@ -105,35 +105,24 @@ function speak(t) {
   if (!("speechSynthesis" in window) || !t) return; const u = new SpeechSynthesisUtterance(t);
   window.__muteUntil = Date.now() + Math.min(20000, 1500 + t.length * 80); u.onend = u.onerror = () => { window.__muteUntil = Date.now() + 700; }; speechSynthesis.speak(u);
 }
-// shared microphone check: opens the mic, shows a live level bar, and says so if the browser hears nothing
+// shared microphone check: asks for permission, then RELEASES the microphone so speech recognition can use it
+// (on phones the browser cannot give the same microphone to two users at once, which is why speech never started)
 window.CareMic = (() => {
-  let stream = null, ctx = null, timer = null, peak = 0, t0 = 0;
-  const el = () => $("#mic-meter");
+  const unsupported = () => navigator.brave ? "Brave blocks voice input. Open this site in Chrome or Edge instead (or use your keyboard’s microphone key)." : "";
   async function start() {
-    stop();
+    const u = unsupported(); if (u) return { error: u };
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return { error: "This page can’t use the microphone (it needs HTTPS and a modern browser)." };
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch (e) { return { error: e.name === "NotFoundError" ? "No microphone found." : "Microphone blocked. Click the lock icon in the address bar, allow the microphone, then try again." }; }
-    try {
-      ctx = new (window.AudioContext || window.webkitAudioContext)(); if (ctx.resume) ctx.resume();
-      const an = ctx.createAnalyser(); an.fftSize = 512; ctx.createMediaStreamSource(stream).connect(an);
-      const buf = new Uint8Array(an.fftSize); peak = 0; t0 = Date.now();
-      timer = setInterval(() => {
-        an.getByteTimeDomainData(buf); let m = 0; for (let i = 0; i < buf.length; i++) m = Math.max(m, Math.abs(buf[i] - 128)); const lv = m / 128; peak = Math.max(peak, lv);
-        const e = el(); if (!e) return; const n = Math.min(20, Math.round(lv * 40));
-        e.textContent = (Date.now() - t0 > 5000 && peak < 0.03) ? "The browser hears no sound from your microphone. Open Windows Settings → System → Sound → Input, choose your microphone and raise its volume." : "Mic level " + "█".repeat(n) + "░".repeat(20 - n);
-      }, 150);
-    } catch (_) {}
+    try { const st = await navigator.mediaDevices.getUserMedia({ audio: true }); st.getTracks().forEach(t => t.stop()); }
+    catch (e) { return { error: e.name === "NotFoundError" ? "No microphone found." : "Microphone blocked. Tap the lock icon in the address bar, allow the microphone, then try again." }; }
+    await new Promise(r => setTimeout(r, 300));       // give the phone a moment to free the microphone
     return {};
   }
-  function stop() { clearInterval(timer); timer = null; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; if (ctx) { try { ctx.close(); } catch (_) {} } ctx = null; const e = el(); if (e) e.textContent = ""; }
-  return { start, stop };
+  return { start, stop() {} };
 })();
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 if (B.talk === "1") {
   const note = h("div", { id: "voice-status", class: "sm", role: "status", "aria-live": "polite", style: "padding:0 12px 6px;opacity:.85" });
-  const meter = h("div", { id: "mic-meter", class: "sm", "aria-hidden": "true", style: "padding:0 12px 6px;opacity:.85;font-family:monospace" });
-  $(".composer").before(note); note.after(meter);
+  $(".composer").before(note); note.textContent = "Voice v4 ready. Tap Talk and speak.";
   if (SR) {
     const mic = $("#mic"); let micRec = null, heard = false, starting = false;
     const micOff = msg => { const r = micRec; micRec = null; if (r) { r.onaudiostart = r.onsoundstart = r.onspeechstart = r.onnomatch = r.onresult = r.onerror = r.onend = null; try { r.abort(); } catch (_) {} }
@@ -153,9 +142,9 @@ if (B.talk === "1") {
         const why = { "not-allowed": "Microphone blocked. Click the lock icon in the address bar and allow the microphone.", "service-not-allowed": "Microphone blocked. Click the lock icon in the address bar and allow the microphone.",
           "no-speech": "I didn’t hear anything. Tap Talk and try again.", "audio-capture": "No microphone found.", "network": "Speech service unreachable. It needs internet, and Brave/privacy settings can block it." }[e.error];
         if (e.error !== "aborted") micOff(why || "Voice error: " + e.error); };
-      r.onend = () => { if (micRec !== r) return; const ok = heard && $("#msg").value.trim(); micOff(ok ? "" : "I didn’t catch anything. If the level bar didn’t move, your microphone isn’t picking up sound (Windows Settings → System → Sound → Input). Then tap Talk again."); if (ok) send(); };
+      r.onend = () => { if (micRec !== r) return; const ok = heard && $("#msg").value.trim(); micOff(ok ? "" : "I didn’t catch anything. Tap Talk and speak right after it says “Microphone is on”."); if (ok) send(); };
       try { r.start(); mic.textContent = "Listening… tap to cancel"; mic.setAttribute("aria-pressed", "true"); } catch (_) { return micOff("Couldn’t start speech recognition. Try again."); }
-      setTimeout(() => { if (micRec === r && !started) micOff("Speech recognition didn’t start. It works in Chrome, Edge and Safari with an internet connection; Brave and some privacy settings block it."); }, 6000);
+      setTimeout(() => { if (micRec === r && !started) micOff("Speech recognition didn’t start. Use Chrome or Edge with an internet connection, close other apps using the microphone, or use your keyboard’s microphone key."); }, 6000);
     };
     window.addEventListener("carevoice:claim", e => { if (e.detail !== "mic" && micRec) micOff(""); });
   }

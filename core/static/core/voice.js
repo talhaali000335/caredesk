@@ -69,7 +69,7 @@
       setTimeout(() => { if (rec === r && on && !begin(r)) off("Voice stopped. Turn it on again."); }, 300);
     };
     if (!begin(r)) return off("Couldn’t start speech recognition. Try again.");
-    setTimeout(() => { if (rec === r && on && !started) off("Speech recognition didn’t start. It works in Chrome, Edge and Safari with an internet connection; Brave and some privacy settings block it."); }, 6000);
+    setTimeout(() => { if (rec === r && on && !started) off("Speech recognition didn’t start. Use Chrome or Edge with an internet connection, close other apps using the microphone, or use your keyboard’s microphone key."); }, 6000);
   }
   btn.onclick = async () => {
     if (on || starting) return off();

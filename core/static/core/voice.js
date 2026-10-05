@@ -4,8 +4,8 @@
   if (!SR || document.body.dataset.talk !== "1") return;       // unsupported browser or Talk disabled
   const $ = s => document.querySelector(s);
   const click = s => { const e = $(s); if (e && !e.hidden && !e.disabled) { e.click(); return true; } return false; };
-  let muteUntil = 0;                                            // ignore the microphone while the page is speaking, or it hears itself
-  const say = t => { if (!("speechSynthesis" in window) || !t) return; const u = new SpeechSynthesisUtterance(t); u.onend = () => { muteUntil = Date.now() + 700; }; speechSynthesis.speak(u); };
+  const say = t => { if (!("speechSynthesis" in window) || !t) return; const u = new SpeechSynthesisUtterance(t);
+    window.__muteUntil = Date.now() + 4000; u.onend = u.onerror = () => { window.__muteUntil = Date.now() + 700; }; speechSynthesis.speak(u); };
   const COMMANDS = [   // [words that must appear, action, spoken reply]
     [/new ticket|raise a ticket/, () => click("#new-ticket"), "Opening new ticket"],
     [/\b(book|booking|appointment|place order|new order)\b/, () => click("#new-booking"), "Opening the form. Please check it and press the button yourself"],
@@ -18,11 +18,10 @@
     [/close|cancel/, () => click("dialog[open] [data-close]"), "Closed"],
     [/sign out|log out/, () => say("For safety, please press Sign out yourself"), ""],
   ];
-  let rec = null, on = false, quickEnds = 0, lastStart = 0;
+  let rec = null, on = false, starting = false, quickEnds = 0, lastStart = 0;
   const btn = document.createElement("button");
   btn.className = "btn sm"; btn.textContent = "Voice commands: off"; btn.setAttribute("aria-pressed", "false");
   const status = $("#voice-status") || Object.assign(document.createElement("div"), { className: "sm" });
-  status.setAttribute("aria-live", "polite");
   const bar = document.createElement("div"); bar.className = "row"; bar.style.cssText = "padding:0 12px 8px"; bar.append(btn);
   if (!status.parentNode) $(".composer").before(status);
   status.before(bar);
@@ -30,8 +29,8 @@
 
   function off(msg) {
     on = false; const r = rec; rec = null;
-    if (r) { r.onstart = r.onresult = r.onerror = r.onend = null; try { r.abort(); } catch (_) {} }
-    btn.textContent = "Voice commands: off"; btn.setAttribute("aria-pressed", "false");
+    if (r) { r.onaudiostart = r.onresult = r.onerror = r.onend = null; try { r.abort(); } catch (_) {} }
+    CareMic.stop(); btn.textContent = "Voice commands: off"; btn.setAttribute("aria-pressed", "false");
     setStatus(msg || "Voice commands are off.");
   }
   function handle(raw) {
@@ -45,13 +44,14 @@
   }
   function begin(r) { try { lastStart = Date.now(); r.start(); return true; } catch (_) { return false; } }
   function start() {
-    const r = new SR(); rec = r; quickEnds = 0;
-    r.lang = navigator.language || "en-US"; r.continuous = true; r.interimResults = false;
-    r.onstart = () => { if (rec === r && on) setStatus("Listening. Say: new ticket, book, help, today, or ask <question>."); };
+    const r = new SR(); rec = r; quickEnds = 0; let started = false;
+    r.lang = navigator.language || "en-US"; r.continuous = true; r.interimResults = true;
+    r.onaudiostart = () => { started = true; if (rec === r && on) setStatus("Listening. Say: new ticket, book, help, today, or ask <question>."); };
     r.onresult = e => {
       if (rec !== r || !on) return;
-      if (("speechSynthesis" in window && speechSynthesis.speaking) || Date.now() < muteUntil) return;
-      const res = e.results[e.results.length - 1]; if (res.isFinal) handle(res[0].transcript);
+      const res = e.results[e.results.length - 1], text = res[0].transcript;
+      if (Date.now() < (window.__muteUntil || 0)) return;               // that was the page speaking, not the user
+      if (res.isFinal) handle(text); else setStatus("Hearing: " + text);   // show progress while speaking, act when the sentence ends
     };
     r.onerror = e => {
       if (rec !== r) return;
@@ -68,13 +68,17 @@
       if (quickEnds >= 5) return off("Voice stopped: the browser keeps closing the microphone. Close other tabs or apps using it, then turn voice on again.");
       setTimeout(() => { if (rec === r && on && !begin(r)) off("Voice stopped. Turn it on again."); }, 300);
     };
-    if (!begin(r)) off("Couldn’t start the microphone. Try again.");
+    if (!begin(r)) return off("Couldn’t start speech recognition. Try again.");
+    setTimeout(() => { if (rec === r && on && !started) off("Speech recognition didn’t start. It works in Chrome, Edge and Safari with an internet connection; Brave and some privacy settings block it."); }, 6000);
   }
-  btn.onclick = () => {
-    if (on) return off();
-    window.dispatchEvent(new CustomEvent("carevoice:claim", { detail: "commands" }));   // the Talk button and this can’t share the microphone
-    on = true; btn.textContent = "Voice commands: ON"; btn.setAttribute("aria-pressed", "true");
-    setStatus("Starting the microphone… allow it if the browser asks."); start();
+  btn.onclick = async () => {
+    if (on || starting) return off();
+    starting = true; window.dispatchEvent(new CustomEvent("carevoice:claim", { detail: "commands" }));   // the Talk button and this can’t share the microphone
+    on = true; btn.textContent = "Voice commands: ON"; btn.setAttribute("aria-pressed", "true"); setStatus("Starting the microphone… allow it if the browser asks.");
+    const m = await CareMic.start(); starting = false;
+    if (!on) return CareMic.stop();                  // turned off while the permission prompt was open
+    if (m.error) return off(m.error);
+    start();
   };
   window.addEventListener("carevoice:claim", e => { if (e.detail !== "commands" && on) off("Voice commands paused while you use Talk."); });
 })();

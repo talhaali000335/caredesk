@@ -37,7 +37,7 @@ async function customers() {
     Object.keys(d.month).sort().reverse().map(k => { const x = d.month[k]; return h("button", { class: "day", "aria-pressed": qDate === k, onclick: () => { qDate = k; customers(); } }, h("b", {}, fmtDay(k)), h("span", {}, `${x.tickets} tickets, ${x.bookings} ${ctx.tenant.theme.noun.toLowerCase()}s, ${x.queries} questions`)); }));
   const date = h("input", { type: "date", value: qDate, style: "width:auto", "aria-label": "Pick a date" }); date.onchange = () => { qDate = date.value; customers(); };
   // team chat
-  const msgs = h("div", { class: "msgs", style: "flex:1" }, d.chat.map(bubble)); const inp = h("input", { placeholder: "Reply as team", maxlength: 2000, "aria-label": "Reply", style: "color:#10212B" });
+  const msgs = h("div", { class: "msgs", style: "flex:1" }, d.chat.map(m => bubble(m, true))); const inp = h("input", { placeholder: "Reply as team", maxlength: 2000, "aria-label": "Reply", style: "color:#10212B" });
   const sendR = async () => { if (!inp.value.trim()) return; await call(q("/api/admin/reply"), "POST", { user_id: uid, text: inp.value }); customers(); };
   inp.onkeydown = e => e.key === "Enter" && sendR();
   const flip = h("button", { class: "btn sm", onclick: async () => { await call(q("/api/admin/reply"), "POST", { user_id: uid, action: d.mode === "human" ? "bot" : "human" }); customers(); } }, d.mode === "human" ? "Hand back to bot" : "Take over chat");

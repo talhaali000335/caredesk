@@ -111,3 +111,36 @@ class Flow(TestCase):
         self.assertEqual(self.post(f"/api/admin/account/{self.a1.id}", {"active": False}).status_code, 200)
         self.assertEqual([a["username"] for a in J(self.client.get("/api/super/admins")) if not a["active"]], ["a1"])
         r = self.post("/api/super/admins", {"tenant": self.t1.id, "username": "a1b", "password": PW}); self.assertEqual(r.status_code, 200)
+
+
+    # ---- assistant chat and team chat are separate conversations ----
+    def test_assistant_and_team_chats_are_separate(self):
+        self.login("u1", "user")
+        self.post("/api/chat", {"message": "What is the cancellation policy?"})
+        before = J(self.client.get("/api/chat?after=0&mode=bot"))
+        self.assertFalse(before["reset"]); self.assertTrue(len(before["messages"]) >= 2)
+        self.post("/api/handoff", {"mode": "human"})
+        r = J(self.client.get("/api/chat?after=999&mode=bot"))                # browser still showing the assistant chat
+        self.assertTrue(r["reset"]); self.assertEqual(r["mode"], "human")
+        self.assertEqual({m["channel"] for m in r["messages"]}, {"team"})     # no assistant messages leak into the team chat
+        self.post("/api/chat", {"message": "I need a person"})
+        r = J(self.client.get("/api/chat?after=0&mode=human"))
+        self.assertFalse(r["reset"]); self.assertEqual({m["channel"] for m in r["messages"]}, {"team"})
+        self.assertFalse(any(m["sender"] == "bot" and m["grounded"] is False and "confirmed information" in m["text"] for m in r["messages"]))  # bot stays silent
+        self.post("/api/handoff", {"mode": "bot"})
+        r = J(self.client.get("/api/chat?after=0&mode=human"))
+        self.assertTrue(r["reset"]); self.assertEqual({m["channel"] for m in r["messages"]}, {"bot"})
+        self.assertTrue(any("cancellation" in m["text"] for m in r["messages"]))   # earlier assistant chat is still there
+
+    def test_team_reply_reaches_user_even_if_in_bot_mode(self):
+        self.login("a1", "admin")
+        self.assertEqual(self.post("/api/admin/reply", {"user_id": self.u1.id, "text": "Hello from the team"}).status_code, 200)
+        self.login("u1", "user")
+        r = J(self.client.get("/api/chat?after=0&mode=bot"))
+        self.assertTrue(r["reset"]); self.assertEqual(r["mode"], "human")
+        self.assertIn("Hello from the team", [m["text"] for m in r["messages"]])
+
+    def test_admin_sees_both_channels(self):
+        self.login("u1", "user"); self.post("/api/chat", {"message": "hello"}); self.post("/api/handoff", {"mode": "human"}); self.post("/api/chat", {"message": "help me"})
+        self.login("a1", "admin"); chat = J(self.client.get(f"/api/admin/users/{self.u1.id}"))["chat"]
+        self.assertEqual({m["channel"] for m in chat}, {"bot", "team"})

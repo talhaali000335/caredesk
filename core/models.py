@@ -79,6 +79,7 @@ class Message(models.Model):
     sender = models.CharField(max_length=5)  # user | bot | team
     text = models.TextField(max_length=3000)
     grounded = models.BooleanField(default=True)
+    channel = models.CharField(max_length=5, default="bot")  # bot | team: which conversation the message belongs to
     created = models.DateTimeField(auto_now_add=True)
     class Meta: ordering = ["id"]
 

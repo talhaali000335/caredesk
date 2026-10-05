@@ -56,7 +56,8 @@ def ser_ticket(t): return dict(id=t.id, subject=t.subject, description=t.descrip
                                date=str(t.requested_date), note=t.admin_note, updated=t.updated.isoformat())
 def ser_booking(b): return dict(id=b.id, service=b.service, when=timezone.localtime(b.scheduled_for).strftime("%Y-%m-%d %H:%M"),
                                 status=b.status, notes=b.notes)
-def ser_msg(m): return dict(id=m.id, sender=m.sender, text=m.text, at=timezone.localtime(m.created).strftime("%H:%M"), grounded=m.grounded)
+def ser_msg(m): return dict(id=m.id, sender=m.sender, text=m.text, at=timezone.localtime(m.created).strftime("%H:%M"), grounded=m.grounded, channel=m.channel)
+def channel_of(mode): return "team" if mode == "human" else "bot"      # assistant chat and team chat are two separate conversations
 
 def day_items(user, d):
     return dict(date=str(d),
@@ -170,27 +171,37 @@ def booking_new(request):
 def chat(request):
     u = request.user
     sess, _ = ChatSession.objects.get_or_create(user=u)
+    ch = channel_of(sess.mode)
     if request.method == "POST":
         text = str(request.data.get("message", "")).strip()[:bot.MAX_IN]
         if not text: raise ValueError("empty message")
         if hit(f"chat:{u.id}", 20, 60): return JsonResponse({"error": "Slow down a little."}, status=429)
-        history = list(Message.objects.filter(user=u).exclude(sender="team").order_by("-id")[:8])[::-1]
-        Message.objects.create(tenant=u.tenant, user=u, sender="user", text=text)
+        history = list(Message.objects.filter(user=u, channel="bot").exclude(sender="team").order_by("-id")[:8])[::-1]
+        Message.objects.create(tenant=u.tenant, user=u, sender="user", text=text, channel=ch)
         if sess.mode == "bot" and u.tenant.bot_enabled:
             out, grounded = bot.reply(u, text, history)
-            Message.objects.create(tenant=u.tenant, user=u, sender="bot", text=out, grounded=grounded)
+            Message.objects.create(tenant=u.tenant, user=u, sender="bot", text=out, grounded=grounded, channel="bot")
+        msgs = Message.objects.filter(user=u, channel=ch).order_by("-id")[:2][::-1]
+        return JsonResponse(dict(mode=sess.mode, reset=False, messages=[ser_msg(m) for m in msgs]))
+    # GET: the browser says which conversation it is showing; if that is no longer the active one, send the whole active one again
     after = int(request.GET.get("after", 0) or 0)
-    msgs = Message.objects.filter(user=u, id__gt=after)[:100] if request.method == "GET" else Message.objects.filter(user=u).order_by("-id")[:2][::-1]
-    return JsonResponse(dict(mode=sess.mode, messages=[ser_msg(m) for m in msgs]))
+    shown = request.GET.get("mode")
+    reset = shown in ("bot", "human") and shown != sess.mode
+    if reset: after = 0
+    qs = Message.objects.filter(user=u, channel=ch, id__gt=after)
+    msgs = qs.order_by("-id")[:100][::-1] if after == 0 else qs[:100]
+    return JsonResponse(dict(mode=sess.mode, reset=reset, messages=[ser_msg(m) for m in msgs]))
 
 @api(roles=[User.USER], post=True)
 def handoff(request):
     u, mode = request.user, request.data.get("mode")
     if mode not in ("bot", "human"): raise ValueError("bad mode")
     if mode == "human" and not u.tenant.human_chat_enabled: return JsonResponse({"error": "Team chat is not enabled"}, status=403)
-    s, _ = ChatSession.objects.get_or_create(user=u); s.mode = mode; s.save()
-    note = "You’re now chatting with the team. They’ll reply here." if mode == "human" else "Back with the assistant."
-    Message.objects.create(tenant=u.tenant, user=u, sender="bot", text=note)
+    s, _ = ChatSession.objects.get_or_create(user=u)
+    if s.mode != mode:
+        s.mode = mode; s.save()
+        note = "You’re now chatting with the care team. They’ll reply here. Your earlier chat with the assistant is still there when you switch back." if mode == "human" else "Back with the assistant."
+        Message.objects.create(tenant=u.tenant, user=u, sender="bot", text=note, channel=channel_of(mode))
     return JsonResponse({"mode": mode})
 
 @api(roles=[User.USER])
@@ -207,7 +218,7 @@ def faq_feedback(request, pk):
         Ticket.objects.create(tenant=f.tenant, user=request.user, subject=f"FAQ didn’t help: {f.question}"[:160])
         if f.tenant.human_chat_enabled:
             s, _ = ChatSession.objects.get_or_create(user=request.user); s.mode = "human"; s.save()
-            Message.objects.create(tenant=f.tenant, user=request.user, sender="bot", text="Thanks for letting us know. A team member will follow up here.")
+            Message.objects.create(tenant=f.tenant, user=request.user, sender="bot", text="Thanks for letting us know. A team member will follow up here.", channel="team")
     return JsonResponse({"ok": True, "escalated": not solved})
 
 # ---------- screen 3: admin console ----------
@@ -280,12 +291,18 @@ def a_reply(request):
     t = staff_tenant(request)
     u = User.objects.get(pk=request.data["user_id"], tenant=t, role=User.USER)
     action = request.data.get("action")
+    sess, _ = ChatSession.objects.get_or_create(user=u)
+    def switch(mode, note):
+        if sess.mode != mode:
+            sess.mode = mode; sess.save()
+            Message.objects.create(tenant=t, user=u, sender="bot", text=note, channel=channel_of(mode))
     if action in ("bot", "human"):
-        s, _ = ChatSession.objects.get_or_create(user=u); s.mode = action; s.save()
+        switch(action, "A team member has joined the chat." if action == "human" else "Back with the assistant.")
         return JsonResponse({"ok": True})
     text = str(request.data["text"]).strip()[:2000]
     if not text: raise ValueError("empty")
-    Message.objects.create(tenant=t, user=u, sender="team", text=text)
+    switch("human", "A team member has joined the chat.")    # a team reply must land where the customer is looking
+    Message.objects.create(tenant=t, user=u, sender="team", text=text, channel="team")
     return JsonResponse({"ok": True})
 
 def _pdf_ok(f):

@@ -57,26 +57,72 @@ $("#tk-go").onclick = async () => { try { await call("/api/ticket", "POST", { su
 $("#bk-go").onclick = async () => { try { const w = $("#bk-w").value; await call("/api/booking", "POST", { service: $("#bk-s").value, when: w, notes: $("#bk-n").value, ...(ORDER ? { qty: +$("#bk-q").value, fulfilment: $("#bk-f").value } : {}) });
   $("#dlg-booking").close(); pick(w.slice(0, 10)); } catch (e) { $("#bk-e").textContent = e.message; } };
 
-// chat
+// chat: the assistant chat and the team chat are two separate conversations; the server returns the one that is active
 const box = $("#msgs");
-function setMode(m) { mode = m; const p = $("#mode"); p.textContent = m === "human" ? "Care team" : "Assistant"; p.className = "pill " + m;
+let hint = null;
+function setMode(m) {
+  mode = m; const p = $("#mode"); p.textContent = m === "human" ? "Care team" : "Assistant"; p.className = "pill " + m;
+  $("#chat-title").textContent = m === "human" ? "Chat with the care team" : "Chat with the assistant"; $("#chat").classList.toggle("team", m === "human");
   $("#swap").textContent = m === "human" ? "Back to assistant" : "Talk to team"; $("#swap").hidden = B.human !== "1" && m === "bot";
-  $("#msg").placeholder = m === "human" ? "Message the team" : "Ask about a ticket, booking or policy"; }
-function append(ms) { ms.forEach(m => { if (m.id > lastId) { lastId = m.id; box.append(bubble(m)); if (reading && m.sender !== "user") speak(m.text); } }); box.scrollTop = box.scrollHeight; }
-async function poll() { const r = await call("/api/chat?after=" + lastId); setMode(r.mode); append(r.messages); }
-async function send(text) {
-  text = (text || $("#msg").value).trim(); if (!text) return; $("#msg").value = ""; $("#send").disabled = true;
-  try { const r = await call("/api/chat", "POST", { message: text }); setMode(r.mode); await poll(); refresh(); }
-  catch (e) { box.append(h("div", { class: "m bot" }, e.message)); } finally { $("#send").disabled = false; }
+  $("#msg").placeholder = m === "human" ? "Message the care team" : "Ask about a ticket, booking or policy"; $("#quick").hidden = m === "human";
 }
-$("#send").onclick = () => send(); $("#msg").onkeydown = e => e.key === "Enter" && send();
-$("#swap").onclick = async () => { const r = await call("/api/handoff", "POST", { mode: mode === "bot" ? "human" : "bot" }); setMode(r.mode); poll(); };
+function append(ms) {
+  if (ms.length && hint) { hint.remove(); hint = null; }
+  ms.forEach(m => { if (m.id > lastId) { lastId = m.id; box.append(bubble(m)); if (reading && m.sender !== "user") speak(m.text); } });
+  box.scrollTop = box.scrollHeight;
+}
+function showHint() {
+  if (box.children.length) return;
+  hint = h("div", { class: "m " + (mode === "human" ? "team" : "bot") }, mode === "human" ? "You’re connected to the care team. Type your message below and they’ll reply here." : (B.greeting || "How can I help?"));
+  box.append(hint);
+}
+async function poll() {
+  const r = await call(`/api/chat?after=${lastId}&mode=${mode}`);
+  if (r.reset) { box.replaceChildren(); hint = null; lastId = 0; }      // switched between assistant and team: show that conversation only
+  setMode(r.mode); append(r.messages); showHint();
+}
+let sending = false;
+async function send(text) {
+  text = (text || $("#msg").value).trim(); if (!text || sending) return;
+  sending = true; $("#msg").value = ""; $("#send").disabled = true; $("#send").textContent = "Sending…";
+  if (hint) { hint.remove(); hint = null; }
+  const pending = bubble({ sender: "user", text, at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }); pending.style.opacity = ".6"; box.append(pending); box.scrollTop = box.scrollHeight;
+  try { await call("/api/chat", "POST", { message: text }); pending.remove(); await poll(); refresh(); }
+  catch (e) { pending.remove(); $("#msg").value = text; box.append(h("div", { class: "m bot", role: "alert" }, "Message not sent: " + e.message)); box.scrollTop = box.scrollHeight; }
+  finally { sending = false; $("#send").disabled = false; $("#send").textContent = "Send"; $("#msg").focus(); }
+}
+$("#send").onclick = () => send(); $("#msg").onkeydown = e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); send(); } };
+$("#swap").onclick = async () => {
+  const b = $("#swap"); b.disabled = true;
+  try { await call("/api/handoff", "POST", { mode: mode === "bot" ? "human" : "bot" }); await poll(); $("#msg").focus(); }
+  catch (e) { box.append(h("div", { class: "m bot", role: "alert" }, e.message)); }
+  finally { b.disabled = false; }
+};
+
 // talk (browser speech APIs; nothing is sent anywhere except the normal chat call)
 function speak(t) { if ("speechSynthesis" in window) speechSynthesis.speak(new SpeechSynthesisUtterance(t)); }
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 if (B.talk === "1") {
-  if (SR) { $("#mic").hidden = false; $("#mic").onclick = () => { const r = new SR(); r.lang = navigator.language; r.onresult = e => send(e.results[0][0].transcript); r.start(); $("#mic").textContent = "Listening…"; r.onend = () => $("#mic").textContent = "Talk"; }; }
+  const note = h("div", { id: "voice-status", class: "sm", role: "status", "aria-live": "polite", style: "padding:0 12px 6px;opacity:.85" }); $(".composer").before(note);
+  if (SR) {
+    const mic = $("#mic"); let micRec = null, got = false;
+    const micOff = msg => { const r = micRec; micRec = null; if (r) { r.onresult = r.onerror = r.onend = null; try { r.abort(); } catch (_) {} } mic.textContent = "Talk"; mic.setAttribute("aria-pressed", "false"); if (msg !== undefined) note.textContent = msg; };
+    mic.hidden = false; mic.setAttribute("aria-pressed", "false");
+    mic.onclick = () => {
+      if (micRec) return micOff("");                                                   // tap again to cancel
+      window.dispatchEvent(new CustomEvent("carevoice:claim", { detail: "mic" }));     // only one microphone user at a time
+      const r = new SR(); micRec = r; got = false; r.lang = navigator.language || "en-US"; r.interimResults = true; r.continuous = false;
+      r.onresult = e => { let t = ""; for (const x of e.results) t += x[0].transcript; $("#msg").value = t.slice(0, 600); got = e.results[e.results.length - 1].isFinal; };
+      r.onerror = e => { if (micRec !== r) return;
+        const why = { "not-allowed": "Microphone blocked. Click the lock icon in the address bar and allow the microphone.", "service-not-allowed": "Microphone blocked. Click the lock icon in the address bar and allow the microphone.",
+          "no-speech": "I didn’t hear anything. Tap Talk and try again.", "audio-capture": "No microphone found.", "network": "Speech service unreachable. Check your internet." }[e.error];
+        if (e.error !== "aborted") micOff(why || "Voice error: " + e.error); };
+      r.onend = () => { if (micRec !== r) return; const ok = got && $("#msg").value.trim(); micOff(""); if (ok) send(); };
+      try { r.start(); mic.textContent = "Listening… tap to cancel"; mic.setAttribute("aria-pressed", "true"); note.textContent = "Speak now."; } catch (_) { micOff("Couldn’t start the microphone. Try again."); }
+    };
+    window.addEventListener("carevoice:claim", e => { if (e.detail !== "mic" && micRec) micOff(""); });
+  }
   if ("speechSynthesis" in window) { const s = $("#speak"); s.hidden = false; s.onclick = () => { reading = !reading; s.setAttribute("aria-pressed", reading); s.textContent = reading ? "Reading on" : "Read aloud"; if (!reading) speechSynthesis.cancel(); }; }
 }
 (B.prompts ? B.prompts.split("|") : []).forEach(p => $("#quick").append(h("button", { onclick: () => send(p) }, p)));
-(async () => { await poll(); if (!lastId) box.append(h("div", { class: "m bot" }, B.greeting || "How can I help?")); refresh(); setInterval(poll, 5000); })();
+(async () => { try { await poll(); } catch (e) { box.append(h("div", { class: "m bot" }, e.message)); } refresh(); setInterval(() => poll().catch(() => {}), 5000); })();

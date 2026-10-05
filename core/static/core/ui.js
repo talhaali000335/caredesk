@@ -24,4 +24,7 @@ const chip = s => h("span", { class: "chip s-" + s }, label(s));
 const fmtDay = d => new Date(d + "T00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 const today = () => new Date().toLocaleDateString("en-CA");
 function empty(text) { return h("div", { class: "empty" }, text); }
-function bubble(m) { return h("div", { class: "m " + m.sender }, m.text, h("small", {}, (m.sender === "bot" ? "Assistant" : m.sender === "team" ? "Care team" : "You") + " · " + m.at)); }
+function bubble(m, admin = false) {
+  const who = m.sender === "bot" ? "Assistant" : m.sender === "team" ? "Care team" : (admin ? "Customer" : "You");
+  return h("div", { class: "m " + m.sender }, m.text, h("small", {}, who + " · " + m.at + (admin ? (m.channel === "team" ? " · team chat" : " · assistant chat") : "")));
+}

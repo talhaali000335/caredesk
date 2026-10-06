@@ -36,18 +36,33 @@ async function customers() {
   const days = h("div", { class: "days" }, h("button", { class: "day", "aria-pressed": !qDate, onclick: () => { qDate = ""; customers(); } }, h("b", {}, "All dates"), h("span", {}, "Everything")),
     Object.keys(d.month).sort().reverse().map(k => { const x = d.month[k]; return h("button", { class: "day", "aria-pressed": qDate === k, onclick: () => { qDate = k; customers(); } }, h("b", {}, fmtDay(k)), h("span", {}, `${x.tickets} tickets, ${x.bookings} ${ctx.tenant.theme.noun.toLowerCase()}s, ${x.queries} questions`)); }));
   const date = h("input", { type: "date", value: qDate, style: "width:auto", "aria-label": "Pick a date" }); date.onchange = () => { qDate = date.value; customers(); };
-  // team chat
-  const msgs = h("div", { class: "msgs", style: "flex:1" }, d.chat.map(m => bubble(m, true))); const inp = h("input", { placeholder: "Reply as team", maxlength: 2000, "aria-label": "Reply", style: "color:#10212B" });
-  const sendR = async () => { if (!inp.value.trim()) return; await call(q("/api/admin/reply"), "POST", { user_id: uid, text: inp.value }); customers(); };
-  inp.onkeydown = e => e.key === "Enter" && sendR();
-  const flip = h("button", { class: "btn sm", onclick: async () => { await call(q("/api/admin/reply"), "POST", { user_id: uid, action: d.mode === "human" ? "bot" : "human" }); customers(); } }, d.mode === "human" ? "Hand back to bot" : "Take over chat");
+  // team chat (sends in place: no full page re-render, so typing and focus are never lost, and failures are shown)
+  const msgs = h("div", { class: "msgs", style: "flex:1" }, d.chat.map(m => bubble(m, true)));
+  const inp = h("input", { type: "text", placeholder: "Type your reply to the customer", maxlength: 2000, autocomplete: "off", enterkeyhint: "send", "aria-label": "Reply", style: "color:#10212B;min-width:0" });
+  const errBox = h("div", { class: "sm", role: "alert", style: "padding:0 12px 8px;color:#ffb4a8" });
+  const title = h("h3", { class: "grow" }, "Conversation · " + (d.mode === "human" ? "team" : "bot"));
+  let busy = false;
+  const sendB = h("button", { type: "button", class: "btn pri", onclick: () => sendR() }, "Send");
+  const flip = h("button", { type: "button", class: "btn sm", onclick: async () => { try { await call(q("/api/admin/reply"), "POST", { user_id: uid, action: d.mode === "human" ? "bot" : "human" }); customers(); } catch (e) { errBox.textContent = e.message; } } }, d.mode === "human" ? "Hand back to bot" : "Take over chat");
+  async function sendR() {
+    const text = inp.value.trim(); if (!text || busy) return;
+    busy = true; sendB.disabled = true; errBox.textContent = "";
+    try {
+      await call(q("/api/admin/reply"), "POST", { user_id: uid, text }); inp.value = "";
+      const nd = await call(q(`/api/admin/users/${uid}`)); d.mode = nd.mode;
+      msgs.replaceChildren(...nd.chat.map(m => bubble(m, true))); msgs.scrollTop = msgs.scrollHeight;
+      title.textContent = "Conversation · " + (nd.mode === "human" ? "team" : "bot"); flip.textContent = nd.mode === "human" ? "Hand back to bot" : "Take over chat";
+    } catch (e) { errBox.textContent = "Not sent: " + e.message; }
+    finally { busy = false; sendB.disabled = false; inp.focus(); }
+  }
+  inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendR(); } });
   detail.append(h("div", { class: "row wrap" }, h("h2", { class: "grow" }, d.name), h("label", { for: "dd", class: "sm", style: "margin:0" }, "Date"), date, h("span", { class: "muted sm" }, d.email || "")),
     h("div", { style: "margin:12px 0" }, days),
     h("div", { class: "card" }, h("h2", { style: "margin-bottom:8px" }, "Tickets"), tickets),
     h("div", { class: "card", style: "margin-top:12px" }, h("h2", { style: "margin-bottom:8px" }, ctx.tenant.theme.noun + "s"), books),
     h("div", { class: "grid2", style: "margin-top:12px" }, h("div", { class: "card" }, h("h2", { style: "margin-bottom:8px" }, "Questions asked"), queries),
-      h("div", { class: "adminchat" }, h("div", { class: "row", style: "padding:10px 12px;border-bottom:1px solid #ffffff22" }, h("h3", { class: "grow" }, "Conversation · " + (d.mode === "human" ? "team" : "bot")), flip), msgs,
-        h("div", { class: "composer" }, inp, h("button", { class: "btn pri", onclick: sendR }, "Send")))));
+      h("div", { class: "adminchat" }, h("div", { class: "row", style: "padding:10px 12px;border-bottom:1px solid #ffffff22" }, title, flip), msgs, errBox,
+        h("div", { class: "composer" }, inp, sendB))));
   msgs.scrollTop = msgs.scrollHeight;
 }
 
